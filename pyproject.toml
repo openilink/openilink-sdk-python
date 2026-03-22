@@ -9,10 +9,10 @@ description = "Python client for the Weixin iLink Bot API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-dependencies = [
-    "requests>=2.28",
-    "qrcode>=7.0",
-]
+dependencies = []
+
+[project.optional-dependencies]
+qrcode = ["qrcode>=7.0"]
 
 [project.urls]
 Homepage = "https://github.com/openilink/openilink-sdk-python"

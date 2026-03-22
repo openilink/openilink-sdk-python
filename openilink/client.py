@@ -7,11 +7,11 @@ import time
 import threading
 from typing import Any, Optional
 from urllib.parse import urljoin, quote
-
-import requests
+from urllib.error import URLError
 
 from .errors import HTTPError, NoContextTokenError
 from .helpers import ensure_trailing_slash, random_wechat_uin
+from .http import DefaultHTTPDoer, HTTPDoer
 from .types import (
     GetConfigResp,
     GetUpdatesResp,
@@ -48,14 +48,14 @@ class Client:
         cdn_base_url: str = DEFAULT_CDN_BASE_URL,
         bot_type: str = DEFAULT_BOT_TYPE,
         version: str = "1.0.0",
-        session: Optional[requests.Session] = None,
+        http_doer: Optional[HTTPDoer] = None,
     ):
         self.base_url = base_url
         self.cdn_base_url = cdn_base_url
         self.token = token
         self.bot_type = bot_type
         self.version = version
-        self._session = session or requests.Session()
+        self._http = http_doer or DefaultHTTPDoer()
         self._context_tokens: dict[str, str] = {}
         self._ctx_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -91,7 +91,7 @@ class Client:
         base = ensure_trailing_slash(self.base_url)
         url = urljoin(base, endpoint)
         headers = self._build_headers(data)
-        resp = self._session.post(url, data=data, headers=headers, timeout=timeout)
+        resp = self._http.do("POST", url, headers=headers, body=data, timeout=timeout)
         if resp.status_code >= 400:
             raise HTTPError(resp.status_code, resp.content)
         return resp.content
@@ -102,8 +102,7 @@ class Client:
         extra_headers: Optional[dict[str, str]] = None,
         timeout: float = 15,
     ) -> bytes:
-        headers = extra_headers or {}
-        resp = self._session.get(url, headers=headers, timeout=timeout)
+        resp = self._http.do("GET", url, headers=extra_headers, timeout=timeout)
         if resp.status_code >= 400:
             raise HTTPError(resp.status_code, resp.content)
         return resp.content
@@ -119,7 +118,7 @@ class Client:
         timeout = _DEFAULT_LONG_POLL_TIMEOUT + 5
         try:
             data = self._do_post("ilink/bot/getupdates", req_body, timeout)
-        except (requests.Timeout, requests.ConnectionError):
+        except (URLError, OSError):
             return GetUpdatesResp(ret=0, get_updates_buf=get_updates_buf)
 
         return _parse_get_updates_resp(data)
@@ -219,7 +218,7 @@ def _parse_cdn_media(d: Optional[dict]) -> Any:
     )
 
 
-def _parse_message_item(d: dict) -> MessageItem:
+def _parse_message_item(d: dict) -> Any:
     from .types import (
         MessageItemType, TextItem, ImageItem, VoiceItem, FileItem, VideoItem,
         RefMessage, MessageItem as MI,
@@ -302,7 +301,7 @@ def _parse_message_item(d: dict) -> MessageItem:
     )
 
 
-def _parse_weixin_message(d: dict) -> "WeixinMessage":
+def _parse_weixin_message(d: dict) -> Any:
     from .types import WeixinMessage, MessageType, MessageState
     items = [_parse_message_item(i) for i in d.get("item_list", [])]
     return WeixinMessage(

@@ -36,6 +36,7 @@ from .types import (
     WeixinMessage,
 )
 from .errors import APIError, HTTPError, NoContextTokenError
+from .http import DefaultHTTPDoer, HTTPDoer, Response
 from .helpers import extract_text, print_qrcode
 from .auth import LoginCallbacks
 from .monitor import MonitorOptions
@@ -110,6 +111,10 @@ __all__ = [
     "APIError",
     "HTTPError",
     "NoContextTokenError",
+    # http
+    "HTTPDoer",
+    "DefaultHTTPDoer",
+    "Response",
     # helpers
     "extract_text",
     "print_qrcode",

@@ -27,10 +27,22 @@ def extract_text(msg: WeixinMessage) -> str:
 
 
 def print_qrcode(url: str) -> None:
-    """Print a QR code to the terminal using ASCII blocks."""
+    """Print a QR code to the terminal using ASCII blocks.
+
+    Requires the optional ``qrcode`` package::
+
+        pip install qrcode
+    """
     import io
     import sys
-    import qrcode
+
+    try:
+        import qrcode
+    except ImportError:
+        raise ImportError(
+            "print_qrcode() requires the 'qrcode' package.\n"
+            "Install it with: pip install qrcode"
+        ) from None
 
     qr = qrcode.QRCode(
         box_size=1,
