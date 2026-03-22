@@ -36,7 +36,7 @@ from .types import (
     WeixinMessage,
 )
 from .errors import APIError, HTTPError, NoContextTokenError
-from .helpers import extract_text
+from .helpers import extract_text, print_qrcode
 from .auth import LoginCallbacks
 from .monitor import MonitorOptions
 
@@ -112,4 +112,5 @@ __all__ = [
     "NoContextTokenError",
     # helpers
     "extract_text",
+    "print_qrcode",
 ]

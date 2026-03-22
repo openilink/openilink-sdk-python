@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from openilink import Client, LoginCallbacks, MonitorOptions, extract_text
+from openilink.helpers import print_qrcode
 
 SYNC_BUF_FILE = Path("sync_buf.dat")
 
@@ -22,7 +23,7 @@ def main():
     print("Fetching QR code...")
     result = client.login_with_qr(
         callbacks=LoginCallbacks(
-            on_qrcode=lambda url: print(f"\nScan QR code with WeChat:\n{url}\n"),
+            on_qrcode=lambda url: (print("\nScan QR code with WeChat:"), print_qrcode(url)),
             on_scanned=lambda: print("Scanned, confirm on WeChat..."),
             on_expired=lambda attempt, mx: print(f"QR expired, refreshing ({attempt}/{mx})..."),
         )
