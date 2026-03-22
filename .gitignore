@@ -8,3 +8,4 @@ build/
 .venv/
 venv/
 sync_buf.dat
+.ilink/
