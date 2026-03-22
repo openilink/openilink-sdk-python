@@ -92,21 +92,25 @@ def cmd_start():
     # Start daemon as background subprocess
     daemon_cmd = [sys.executable, "-c", "from openilink.daemon import run_daemon; run_daemon()"]
 
-    if sys.platform == "win32":
-        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        proc = subprocess.Popen(
-            daemon_cmd,
-            stdout=open(ILINK_DIR / "daemon.log", "a"),
-            stderr=subprocess.STDOUT,
-            creationflags=flags,
-        )
-    else:
-        proc = subprocess.Popen(
-            daemon_cmd,
-            stdout=open(ILINK_DIR / "daemon.log", "a"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+    log_fh = open(ILINK_DIR / "daemon.log", "a")
+    try:
+        if sys.platform == "win32":
+            flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            proc = subprocess.Popen(
+                daemon_cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                creationflags=flags,
+            )
+        else:
+            proc = subprocess.Popen(
+                daemon_cmd,
+                stdout=log_fh,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+    finally:
+        log_fh.close()
 
     # Poll for PID file (check every 0.2s, up to 3s)
     pid = proc.pid

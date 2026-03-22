@@ -105,4 +105,4 @@ def _sleep_or_stop(client: Client, seconds: float) -> None:
     """Sleep in small increments so we can respond to stop quickly."""
     end = time.monotonic() + seconds
     while time.monotonic() < end and not client.stopped:
-        time.sleep(min(0.5, end - time.monotonic()))
+        time.sleep(max(0, min(0.5, end - time.monotonic())))

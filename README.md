@@ -58,7 +58,7 @@ client = Client(token="你保存的bot_token")
 | `cdn_base_url` | `https://novac2c.cdn.weixin.qq.com/c2c` | CDN 地址 |
 | `bot_type` | `"3"` | Bot 类型 |
 | `version` | `"1.0.0"` | 客户端版本号 |
-| `session` | `None` | 自定义 `requests.Session` |
+| `http_doer` | `None` | 自定义 `HTTPDoer`，默认使用标准库实现 |
 
 ### 2. 扫码登录
 
@@ -342,14 +342,23 @@ client.monitor(handler, opts=MonitorOptions(
 openilink-sdk-python/
 ├── openilink/
 │   ├── __init__.py    # 包入口，统一导出
+│   ├── __main__.py    # python -m openilink 入口
 │   ├── client.py      # 核心客户端，HTTP 请求封装和 API 方法
 │   ├── types.py       # 数据类型定义（dataclass + enum）
 │   ├── auth.py        # 扫码登录流程
 │   ├── monitor.py     # 长轮询消息监听
 │   ├── errors.py      # 异常类型
-│   └── helpers.py     # 工具函数
+│   ├── helpers.py     # 工具函数
+│   ├── http.py        # HTTP 抽象层（HTTPDoer 协议）
+│   ├── cli.py         # 命令行界面
+│   ├── daemon.py      # 后台守护进程
+│   ├── mcp_server.py  # MCP Server（Claude Code 插件）
+│   ├── auto.py        # 自动化工具
+│   └── filelock.py    # 文件锁工具
+├── docs/              # 文档
 ├── examples/
 │   └── echo_bot.py    # Echo 机器人示例
+├── .mcp.json          # MCP 配置
 ├── pyproject.toml
 └── README.md
 ```
@@ -357,8 +366,7 @@ openilink-sdk-python/
 ## 依赖
 
 - Python >= 3.10
-- [requests](https://pypi.org/project/requests/) >= 2.28
-- [qrcode](https://pypi.org/project/qrcode/) >= 7.0
+- 零外部依赖（仅使用 Python 标准库）
 
 ## License
 

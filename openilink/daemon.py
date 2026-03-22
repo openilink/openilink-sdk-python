@@ -85,8 +85,8 @@ def run_daemon():
     if base_url:
         client.base_url = base_url
 
-    # Write PID
-    PID_FILE.write_text(str(os.getpid()))
+    # Write PID (under file lock to avoid races with CLI readers)
+    locked_write_text(PID_FILE, str(os.getpid()))
 
     # Handle stop signal
     def on_signal(sig, frame):
@@ -94,6 +94,8 @@ def run_daemon():
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, on_signal)
 
     # Load sync cursor
     buf = ""
@@ -127,6 +129,8 @@ def run_daemon():
     ))
 
     # Cleanup PID
-    if PID_FILE.exists():
+    try:
         PID_FILE.unlink()
+    except OSError:
+        pass
     logger.info("ilink daemon stopped")

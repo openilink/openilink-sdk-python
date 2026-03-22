@@ -75,4 +75,10 @@ class DefaultHTTPDoer:
             with urlopen(req, timeout=timeout, context=self._ssl_ctx) as resp:
                 return Response(status_code=resp.status, content=resp.read())
         except _URLHTTPError as e:
-            return Response(status_code=e.code, content=e.read())
+            try:
+                body = e.read()
+            except Exception:
+                body = b""
+            finally:
+                e.close()
+            return Response(status_code=e.code, content=body)

@@ -138,15 +138,19 @@ def _ensure_daemon():
         return False
     ILINK_DIR.mkdir(exist_ok=True)
     cmd = [sys.executable, "-c", "from openilink.daemon import run_daemon; run_daemon()"]
-    kw: dict = dict(
-        stdout=open(ILINK_DIR / "daemon.log", "a"),
-        stderr=subprocess.STDOUT,
-    )
-    if sys.platform == "win32":
-        kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-    else:
-        kw["start_new_session"] = True
-    subprocess.Popen(cmd, **kw)
+    log_fh = open(ILINK_DIR / "daemon.log", "a")
+    try:
+        kw: dict = dict(
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+        )
+        if sys.platform == "win32":
+            kw["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        else:
+            kw["start_new_session"] = True
+        subprocess.Popen(cmd, **kw)
+    finally:
+        log_fh.close()
     time.sleep(1.5)
     return _daemon_running()
 
@@ -172,6 +176,8 @@ def _poll_new_messages() -> list[dict]:
             uid = msg.get("from_user_id", "")
             ct = msg.get("context_token", "")
             if uid and ct:
+                if len(_ctx_tokens) > 1000:
+                    _ctx_tokens.clear()
                 _ctx_tokens[uid] = ct
         except json.JSONDecodeError:
             pass
@@ -183,6 +189,8 @@ def _do_reply(user_id: str, text: str) -> dict:
     # Mark as replied — cancel any pending auto-ack
     with _pending_lock:
         _pending.pop(user_id, None)
+        if len(_replied) > 1000:
+            _replied.clear()
         _replied.add(user_id)
 
     state = _load_state()
@@ -278,6 +286,8 @@ def _monitor_loop():
                 # Dedup: skip if already pushed
                 if msg_id in _pushed_ids:
                     continue
+                if len(_pushed_ids) > 10000:
+                    _pushed_ids.clear()
                 _pushed_ids.add(msg_id)
 
                 user_id = msg.get("from_user_id", "")
@@ -323,6 +333,11 @@ def _auto_ack_loop():
                     del _pending[uid]
 
         for uid, ctx in expired:
+            # Re-check under lock right before sending to close the race
+            # window between popping from pending and actually sending.
+            with _pending_lock:
+                if uid in _replied:
+                    continue
             try:
                 _send_reply_direct(uid, AUTO_ACK_MESSAGE, ctx)
                 _log("info", f"Auto-ack sent to {uid} (Claude busy)")

@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Callable, Optional
 from urllib.parse import urljoin, quote
 
+from .errors import APIError
 from .helpers import ensure_trailing_slash
 from .types import LoginResult, QRCodeResponse, QRStatusResponse
 
@@ -38,7 +39,10 @@ def fetch_qr_code(client: Client) -> QRCodeResponse:
     bot_type = client.bot_type or "3"
     url = urljoin(base, "ilink/bot/get_bot_qrcode") + "?bot_type=" + quote(bot_type)
     data = client._do_get(url, timeout=15)
-    d = json.loads(data)
+    try:
+        d = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise APIError(errmsg=f"fetch_qr_code: invalid JSON response: {exc}") from exc
     return QRCodeResponse(
         qrcode=d.get("qrcode", ""),
         qrcode_img_content=d.get("qrcode_img_content", ""),
@@ -52,9 +56,12 @@ def poll_qr_status(client: Client, qrcode: str) -> QRStatusResponse:
     headers = {"iLink-App-ClientVersion": "1"}
     try:
         data = client._do_get(url, extra_headers=headers, timeout=QR_LONG_POLL_TIMEOUT)
-    except Exception:
+    except (OSError, ValueError, ConnectionError):
         return QRStatusResponse(status="wait")
-    d = json.loads(data)
+    try:
+        d = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise APIError(errmsg=f"poll_qr_status: invalid JSON response: {exc}") from exc
     return QRStatusResponse(
         status=d.get("status", ""),
         bot_token=d.get("bot_token", ""),

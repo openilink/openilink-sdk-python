@@ -9,3 +9,8 @@ build/
 venv/
 sync_buf.dat
 .ilink/
+.env
+.env.*
+*.pem
+*.key
+.claude/settings.local.json

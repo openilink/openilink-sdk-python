@@ -21,11 +21,21 @@ if sys.platform == "win32":
     import msvcrt
 
     def _lock(fd: int, exclusive: bool = True) -> None:
-        """Acquire a lock on an open file descriptor (Windows)."""
+        """Acquire a lock on an open file descriptor (Windows).
+
+        Note: msvcrt does not support true shared (reader) locks.  Both
+        exclusive and non-exclusive requests use LK_NBLCK (non-blocking
+        exclusive).  For the non-exclusive/read path we simply retry with
+        a short sleep, which gives acceptable concurrency for the light
+        contention patterns in this project.
+        """
         # msvcrt.locking works on the current file position for N bytes.
         # Lock a single byte at position 0 as an advisory lock sentinel.
         os.lseek(fd, 0, os.SEEK_SET)
-        mode = msvcrt.LK_LOCK if exclusive else msvcrt.LK_NBRLCK
+        if exclusive:
+            mode = msvcrt.LK_LOCK  # blocking exclusive
+        else:
+            mode = msvcrt.LK_NBLCK  # non-blocking; retry manually
         # Retry briefly – another process may hold the lock momentarily.
         for _ in range(50):
             try:

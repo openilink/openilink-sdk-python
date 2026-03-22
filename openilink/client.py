@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import threading
 from typing import Any, Optional
@@ -130,7 +131,7 @@ class Client:
 
     def send_text(self, to: str, text: str, context_token: str) -> str:
         """Send a plain text message. Returns the client_id."""
-        client_id = f"sdk-{int(time.time() * 1000)}"
+        client_id = f"sdk-{int.from_bytes(os.urandom(8), 'big'):016x}"
         msg = {
             "msg": {
                 "to_user_id": to,

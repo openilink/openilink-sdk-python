@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from .daemon import ILINK_DIR, INBOX_FILE, _ensure_dir, load_state
+from .filelock import locked_read_text, locked_write_text, locked_read_lines
 
 AUTO_CURSOR_FILE = ILINK_DIR / "auto_cursor"
 DEFAULT_POLL_INTERVAL = 3.0
@@ -29,15 +30,18 @@ DEFAULT_SYSTEM_PROMPT = (
 
 def _read_auto_cursor() -> int:
     try:
-        return int(AUTO_CURSOR_FILE.read_text().strip())
+        text = locked_read_text(AUTO_CURSOR_FILE)
+        if text:
+            return int(text.strip())
     except (FileNotFoundError, ValueError, OSError):
-        return 0
+        pass
+    return 0
 
 
 def _write_auto_cursor(n: int):
     try:
         _ensure_dir()
-        AUTO_CURSOR_FILE.write_text(str(n))
+        locked_write_text(AUTO_CURSOR_FILE, str(n))
     except OSError:
         pass  # best-effort; don't crash on write failure
 
@@ -49,19 +53,18 @@ def _get_new_messages() -> list[dict]:
 
     cursor = _read_auto_cursor()
     messages: list[dict] = []
-    total = 0
 
-    with open(INBOX_FILE, encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            total = i + 1
-            if i < cursor:
-                continue
-            line = line.strip()
-            if line:
-                try:
-                    messages.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass  # skip malformed lines
+    lines = locked_read_lines(INBOX_FILE)
+    total = len(lines)
+    for i, line in enumerate(lines):
+        if i < cursor:
+            continue
+        line = line.strip()
+        if line:
+            try:
+                messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass  # skip malformed lines
 
     _write_auto_cursor(total)
     return messages
@@ -138,8 +141,7 @@ def run_auto(
 
     # Skip existing messages on startup
     if INBOX_FILE.exists():
-        with open(INBOX_FILE, encoding="utf-8") as f:
-            total = sum(1 for _ in f)
+        total = len(locked_read_lines(INBOX_FILE))
         _write_auto_cursor(total)
         print(f"[auto] Skipped {total} existing messages")
 

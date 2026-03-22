@@ -6,7 +6,7 @@
 
 ```bash
 # 1. 进入项目目录
-cd C:\Users\11421\wxl\openilink-sdk-python
+cd <your-project-path>
 
 # 2. 启动 Claude Code
 claude
@@ -87,4 +87,4 @@ A: 不在。Claude Code 每次启动是新会话，但微信的消息记录（in
 A: 不会。iLink 服务端会保存消息，daemon 重启后会通过 sync cursor 从断点继续拉取。
 
 **Q: 可以开机自启动吗？**
-A: 可以。把 `cd C:\Users\11421\wxl\openilink-sdk-python && python -m openilink start` 加到 Windows 启动项（shell:startup）里，daemon 就能开机自启。Claude Code 需要手动打开。
+A: 可以。把 `cd <your-project-path> && python -m openilink start` 加到 Windows 启动项（shell:startup）里，daemon 就能开机自启。Claude Code 需要手动打开。
