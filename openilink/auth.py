@@ -116,9 +116,13 @@ def login_with_qr(
         elif status.status == "confirmed":
             if not status.ilink_bot_id:
                 return LoginResult(message="server did not return bot ID")
+            if not status.baseurl:
+                return LoginResult(
+                    message="server did not return baseurl; "
+                            "login succeeded but the session cannot be used"
+                )
             client.token = status.bot_token
-            if status.baseurl:
-                client.base_url = status.baseurl
+            client.base_url = status.baseurl
             return LoginResult(
                 connected=True,
                 bot_token=status.bot_token,

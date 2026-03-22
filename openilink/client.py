@@ -9,7 +9,7 @@ from typing import Any, Optional
 from urllib.parse import urljoin, quote
 from urllib.error import URLError
 
-from .errors import HTTPError, NoContextTokenError
+from .errors import APIError, HTTPError, NoContextTokenError
 from .helpers import ensure_trailing_slash, random_wechat_uin
 from .http import DefaultHTTPDoer, HTTPDoer
 from .types import (
@@ -154,7 +154,13 @@ class Client:
             "base_info": self._build_base_info(),
         }
         data = self._do_post("ilink/bot/getconfig", req_body, _DEFAULT_CONFIG_TIMEOUT)
-        d = json.loads(data)
+        try:
+            d = json.loads(data)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise APIError(
+                ret=-1, errcode=-1,
+                errmsg=f"get_config: invalid JSON response: {exc}",
+            ) from exc
         return GetConfigResp(
             ret=d.get("ret", 0),
             errmsg=d.get("errmsg", ""),
@@ -177,7 +183,13 @@ class Client:
         """Request a pre-signed CDN upload URL."""
         req["base_info"] = self._build_base_info()
         data = self._do_post("ilink/bot/getuploadurl", req, _DEFAULT_API_TIMEOUT)
-        d = json.loads(data)
+        try:
+            d = json.loads(data)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise APIError(
+                ret=-1, errcode=-1,
+                errmsg=f"get_upload_url: invalid JSON response: {exc}",
+            ) from exc
         return GetUploadURLResp(
             upload_param=d.get("upload_param", ""),
             thumb_upload_param=d.get("thumb_upload_param", ""),
@@ -206,6 +218,14 @@ class Client:
 
 
 # ---------- Parsing helpers ----------
+
+def _safe_enum(enum_cls, value, default=None):
+    """Convert *value* to *enum_cls*, returning *default* on unknown values."""
+    try:
+        return enum_cls(value)
+    except (ValueError, KeyError):
+        return default if default is not None else value
+
 
 def _parse_cdn_media(d: Optional[dict]) -> Any:
     if not d:
@@ -287,7 +307,7 @@ def _parse_message_item(d: dict) -> Any:
         )
 
     return MI(
-        type=MessageItemType(d.get("type", 0)),
+        type=_safe_enum(MessageItemType, d.get("type", 0), MessageItemType.NONE),
         create_time_ms=d.get("create_time_ms", 0),
         update_time_ms=d.get("update_time_ms", 0),
         is_completed=d.get("is_completed", False),
@@ -315,15 +335,21 @@ def _parse_weixin_message(d: dict) -> Any:
         delete_time_ms=d.get("delete_time_ms", 0),
         session_id=d.get("session_id", ""),
         group_id=d.get("group_id", ""),
-        message_type=MessageType(d.get("message_type", 0)),
-        message_state=MessageState(d.get("message_state", 0)),
+        message_type=_safe_enum(MessageType, d.get("message_type", 0), MessageType.NONE),
+        message_state=_safe_enum(MessageState, d.get("message_state", 0), MessageState.NEW),
         item_list=items,
         context_token=d.get("context_token", ""),
     )
 
 
 def _parse_get_updates_resp(data: bytes) -> GetUpdatesResp:
-    d = json.loads(data)
+    try:
+        d = json.loads(data)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise APIError(
+            ret=-1, errcode=-1,
+            errmsg=f"get_updates: invalid JSON response: {exc}",
+        ) from exc
     msgs = [_parse_weixin_message(m) for m in d.get("msgs", [])]
     return GetUpdatesResp(
         ret=d.get("ret", 0),

@@ -27,13 +27,16 @@ def extract_text(msg: WeixinMessage) -> str:
 
 
 def print_qrcode(url: str) -> None:
-    """Print a QR code to the terminal using ASCII blocks.
+    """Print a QR code to the terminal using compact single-char blocks.
+
+    Also saves a PNG image to ``.ilink/qrcode.png`` and attempts to open it,
+    which is more reliable in environments with limited terminal width
+    (e.g. Claude Code).
 
     Requires the optional ``qrcode`` package::
 
         pip install qrcode
     """
-    import io
     import sys
 
     try:
@@ -52,16 +55,70 @@ def print_qrcode(url: str) -> None:
     qr.add_data(url)
     qr.make(fit=True)
 
-    # Render to a UTF-8 StringIO to avoid Windows GBK encoding issues,
-    # then write with fallback.
-    buf = io.StringIO()
-    qr.print_ascii(out=buf, invert=True)
-    text = buf.getvalue()
+    # Save as PNG and try to open with system viewer
+    _save_and_open_qrcode(qr)
+
+    # Compact terminal rendering: 1 char per module using half-block chars.
+    # ▀ (upper half), ▄ (lower half), █ (full), ' ' (empty).
+    # Each output row encodes two QR rows, halving the height.
+    matrix = qr.get_matrix()
+    rows = len(matrix)
+    DARK = True
+    LIGHT = False
+
+    lines: list[str] = []
+    for y in range(0, rows, 2):
+        row_top = matrix[y]
+        row_bot = matrix[y + 1] if y + 1 < rows else [LIGHT] * len(row_top)
+        chars: list[str] = []
+        for top, bot in zip(row_top, row_bot):
+            if top and bot:
+                chars.append("\u2588")      # █  both dark
+            elif top and not bot:
+                chars.append("\u2580")      # ▀  top dark
+            elif not top and bot:
+                chars.append("\u2584")      # ▄  bottom dark
+            else:
+                chars.append(" ")           #    both light
+        lines.append("".join(chars))
+
+    text = "\n".join(lines) + "\n"
     try:
         sys.stdout.write(text)
     except UnicodeEncodeError:
-        # Fallback: use ## for dark and spaces for light
-        matrix = qr.get_matrix()
+        # Fallback: plain ASCII, 1 char per module
         for row in matrix:
-            print("".join("##" if cell else "  " for cell in row))
+            print("".join("#" if cell else " " for cell in row))
     sys.stdout.flush()
+
+
+def _save_and_open_qrcode(qr) -> None:
+    """Save QR code as PNG to .ilink/qrcode.png and open with system viewer."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    qr_dir = Path(".ilink")
+    qr_dir.mkdir(exist_ok=True)
+    qr_path = qr_dir / "qrcode.png"
+
+    try:
+        img = qr.make_image(fill_color="black", back_color="white")
+        # make_image may need pillow; scale up for scanning
+        img = img.resize((img.size[0] * 10, img.size[1] * 10))
+        img.save(str(qr_path))
+        print(f"QR code saved to: {qr_path.resolve()}")
+    except Exception:
+        # Pillow not installed or save failed — skip silently
+        return
+
+    # Try to open with system viewer
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(qr_path))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(qr_path)])
+        else:
+            subprocess.Popen(["xdg-open", str(qr_path)])
+    except Exception:
+        pass

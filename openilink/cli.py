@@ -7,6 +7,13 @@ Usage:
     python -m openilink status      # Show daemon status
     python -m openilink send <user> <text>  # Send a message
     python -m openilink check       # Print new messages as JSON
+    python -m openilink logout      # Logout and clear saved token
+    python -m openilink auto        # Auto-reply using Claude Code
+
+Auto-reply options:
+    --interval <seconds>   Poll interval (default: 3)
+    --timeout  <seconds>   Claude CLI timeout per message (default: 120)
+    --prompt   <text>      Custom system prompt for replies
 """
 
 from __future__ import annotations
@@ -17,11 +24,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from .daemon import (
     ILINK_DIR, STATE_FILE, INBOX_FILE, PID_FILE,
     _ensure_dir, load_state, save_state,
 )
+from .filelock import file_lock, locked_read_lines, locked_write_text
 
 
 def cmd_login():
@@ -31,9 +40,15 @@ def cmd_login():
 
     client = Client()
     print("Fetching QR code...")
+
+    def _on_qrcode(url):
+        print(f"\nQR URL: {url}")
+        print("Scan with WeChat:\n")
+        print_qrcode(url)
+
     result = client.login_with_qr(
         callbacks=LoginCallbacks(
-            on_qrcode=lambda url: (print("\nScan with WeChat:"), print_qrcode(url)),
+            on_qrcode=_on_qrcode,
             on_scanned=lambda: print("Scanned, confirm on WeChat..."),
             on_expired=lambda n, mx: print(f"QR expired, refreshing ({n}/{mx})..."),
         )
@@ -49,6 +64,15 @@ def cmd_login():
         "bot_id": result.bot_id,
         "user_id": result.user_id,
     })
+
+    # Clear expired marker on successful login
+    expired_file = ILINK_DIR / "expired"
+    if expired_file.exists():
+        try:
+            expired_file.unlink()
+        except OSError:
+            pass
+
     print(f"\nLogin success! BotID={result.bot_id} UserID={result.user_id}")
     print(f"Token saved to {STATE_FILE}")
 
@@ -84,11 +108,49 @@ def cmd_start():
             start_new_session=True,
         )
 
-    # Wait a moment for PID file
-    time.sleep(1)
+    # Poll for PID file (check every 0.2s, up to 3s)
     pid = proc.pid
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        if PID_FILE.exists():
+            try:
+                pid = int(PID_FILE.read_text().strip())
+            except ValueError:
+                pass
+            break
+        # Check if the process died early
+        if proc.poll() is not None:
+            print(f"Daemon exited prematurely (exit code {proc.returncode}).",
+                  file=sys.stderr)
+            print(f"Check log: {ILINK_DIR / 'daemon.log'}", file=sys.stderr)
+            sys.exit(1)
+        time.sleep(0.2)
+    else:
+        print("Warning: daemon PID file not found after 3s, process may be slow to start.",
+              file=sys.stderr)
+
     print(f"Daemon started (pid={pid})")
     print(f"Log: {ILINK_DIR / 'daemon.log'}")
+
+
+def cmd_logout():
+    """Logout: stop daemon and delete saved token."""
+    # Stop daemon first
+    cmd_stop()
+
+    # Remove state files
+    removed = []
+    for f in [STATE_FILE, INBOX_FILE, ILINK_DIR / "sync_buf.dat",
+              ILINK_DIR / "cursor", ILINK_DIR / "mcp_cursor",
+              ILINK_DIR / "auto_cursor", ILINK_DIR / "qrcode.png",
+              ILINK_DIR / "expired"]:
+        if f.exists():
+            f.unlink()
+            removed.append(f.name)
+
+    if removed:
+        print(f"Cleaned up: {', '.join(removed)}")
+    print("Logged out. Run 'python -m openilink login' to login again.")
 
 
 def cmd_stop():
@@ -129,7 +191,8 @@ def cmd_status():
         print("Daemon: stopped")
 
     if INBOX_FILE.exists():
-        count = sum(1 for _ in open(INBOX_FILE, encoding="utf-8"))
+        lines = locked_read_lines(INBOX_FILE)
+        count = len(lines)
         cursor = _read_cursor()
         unread = count - cursor
         print(f"Inbox:  {count} total, {unread} unread")
@@ -169,13 +232,16 @@ def cmd_check():
     cursor = _read_cursor()
     messages = []
 
-    with open(INBOX_FILE, encoding="utf-8") as f:
-        for i, line in enumerate(f):
-            if i < cursor:
-                continue
-            line = line.strip()
-            if line:
+    lines = locked_read_lines(INBOX_FILE)
+    for i, line in enumerate(lines):
+        if i < cursor:
+            continue
+        line = line.strip()
+        if line:
+            try:
                 messages.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
 
     # Update cursor
     new_cursor = cursor + len(messages)
@@ -217,17 +283,23 @@ CURSOR_FILE = ILINK_DIR / "cursor"
 
 
 def _read_cursor() -> int:
-    if CURSOR_FILE.exists():
-        try:
-            return int(CURSOR_FILE.read_text().strip())
-        except ValueError:
-            return 0
+    try:
+        from .filelock import locked_read_text
+        text = locked_read_text(CURSOR_FILE)
+        if text:
+            return int(text.strip())
+    except (FileNotFoundError, ValueError, OSError):
+        pass
     return 0
 
 
 def _write_cursor(n: int):
-    _ensure_dir()
-    CURSOR_FILE.write_text(str(n))
+    try:
+        _ensure_dir()
+        from .filelock import locked_write_text as _lwt
+        _lwt(CURSOR_FILE, str(n))
+    except OSError:
+        pass  # best-effort; don't crash on write failure
 
 
 def _find_context_token(user_id: str) -> str | None:
@@ -235,18 +307,26 @@ def _find_context_token(user_id: str) -> str | None:
     if not INBOX_FILE.exists():
         return None
     token = None
-    with open(INBOX_FILE, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    lines = locked_read_lines(INBOX_FILE)
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
             msg = json.loads(line)
-            if msg.get("from_user_id") == user_id and msg.get("context_token"):
-                token = msg["context_token"]
+        except json.JSONDecodeError:
+            continue
+        if msg.get("from_user_id") == user_id and msg.get("context_token"):
+            token = msg["context_token"]
     return token
 
 
 def main():
+    # Fix Windows console encoding for Chinese output
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+
     args = sys.argv[1:]
     if not args:
         print(__doc__)
@@ -256,6 +336,8 @@ def main():
 
     if cmd == "login":
         cmd_login()
+    elif cmd == "logout":
+        cmd_logout()
     elif cmd == "start":
         cmd_start()
     elif cmd == "stop":
@@ -269,6 +351,23 @@ def main():
         cmd_send(args[1], " ".join(args[2:]))
     elif cmd == "check":
         cmd_check()
+    elif cmd == "auto":
+        from .auto import run_auto
+        kwargs: dict[str, Any] = {}
+        i = 1
+        while i < len(args):
+            if args[i] == "--interval" and i + 1 < len(args):
+                kwargs["poll_interval"] = float(args[i + 1])
+                i += 2
+            elif args[i] == "--timeout" and i + 1 < len(args):
+                kwargs["claude_timeout"] = float(args[i + 1])
+                i += 2
+            elif args[i] == "--prompt" and i + 1 < len(args):
+                kwargs["system_prompt"] = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        run_auto(**kwargs)
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         print(__doc__)
