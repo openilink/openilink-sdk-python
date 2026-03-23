@@ -336,6 +336,63 @@ client.monitor(handler, opts=MonitorOptions(
 | `extract_text(msg)` | 提取消息中第一条文本 |
 | `print_qrcode(url)` | 在终端打印二维码 |
 
+## CLI 命令
+
+```bash
+python -m openilink login       # 扫码登录
+python -m openilink start       # 启动后台 daemon
+python -m openilink stop        # 停止 daemon
+python -m openilink status      # 查看状态
+python -m openilink send <uid> <text>  # 发送消息
+python -m openilink check       # 查看未读消息
+python -m openilink logout      # 登出并清除 token
+python -m openilink auto        # Claude 自动回复模式
+```
+
+## Claude Code 集成
+
+本 SDK 内置 MCP Server，可让 Claude Code 直接收发微信消息。
+
+### 快速使用
+
+```bash
+# 首次：登录微信
+cd <your-project-path>
+python -m openilink login
+
+# 启动带微信的 Claude Code（在任何目录下）
+ccw
+```
+
+### 配置 ccw 命令
+
+```bash
+# 1. 创建 MCP 配置文件
+cat > ~/.claude/mcp-wechat.json << 'EOF'
+{
+  "mcpServers": {
+    "wechat": {
+      "command": "python",
+      "args": ["-m", "openilink.mcp_server"],
+      "cwd": "<your-project-path>",
+      "env": { "WECHAT_AUTO_ACK_TIMEOUT": "0" }
+    }
+  }
+}
+EOF
+
+# 2. 添加别名
+echo 'alias ccw="claude --mcp-config ~/.claude/mcp-wechat.json"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### 多实例安全
+
+MCP Server 内置单例机制：当你用 `ccw` 启动新会话时，旧的 MCP Server 会自动停止，确保同一时间只有一个 Claude Code 处理微信消息。
+
+- `ccw` → 带微信的 Claude Code
+- `claude` → 普通 Claude Code（不连微信）
+
 ## 项目结构
 
 ```

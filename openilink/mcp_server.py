@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -70,6 +71,10 @@ INBOX_FILE = ILINK_DIR / "inbox.jsonl"
 PID_FILE = ILINK_DIR / "daemon.pid"
 CURSOR_FILE = ILINK_DIR / "mcp_cursor"
 EXPIRED_FILE = ILINK_DIR / "expired"
+MCP_PID_FILE = ILINK_DIR / "mcp.pid"
+
+# Singleton: stop any existing MCP server before we start
+_stop_event = threading.Event()
 
 _ctx_tokens: dict[str, str] = {}
 
@@ -109,6 +114,43 @@ def _write_cursor(n: int):
         locked_write_text(CURSOR_FILE, str(n))
     except OSError:
         pass  # best-effort; don't crash on write failure
+
+
+# ── Singleton MCP ──────────────────────────────────────────────────
+
+def _kill_old_mcp():
+    """Stop any previously running MCP server so only one handles WeChat."""
+    try:
+        pid_text = MCP_PID_FILE.read_text().strip()
+        old_pid = int(pid_text)
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    if old_pid == os.getpid():
+        return
+    try:
+        if sys.platform == "win32":
+            # Send CTRL_BREAK to the old process group
+            os.kill(old_pid, signal.CTRL_BREAK_EVENT)
+        else:
+            os.kill(old_pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        pass  # already dead
+
+
+def _write_mcp_pid():
+    """Write our PID so the next MCP server can stop us."""
+    ILINK_DIR.mkdir(exist_ok=True)
+    try:
+        locked_write_text(MCP_PID_FILE, str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _cleanup_mcp_pid():
+    try:
+        MCP_PID_FILE.unlink()
+    except OSError:
+        pass
 
 
 # ── Daemon ──────────────────────────────────────────────────────────
@@ -257,8 +299,10 @@ def _monitor_loop():
 
     _expired_notified = False
 
-    while True:
+    while not _stop_event.is_set():
         time.sleep(2)
+        if _stop_event.is_set():
+            break
 
         # Check if daemon flagged session as expired
         if EXPIRED_FILE.exists() and not _expired_notified:
@@ -435,11 +479,25 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
 
+    # Singleton: kill any old MCP server, then claim the PID
+    _kill_old_mcp()
+    _write_mcp_pid()
+
+    # Handle graceful shutdown (from a newer MCP server taking over)
+    def _on_stop(signum, frame):
+        _stop_event.set()
+
+    if sys.platform == "win32":
+        signal.signal(signal.SIGBREAK, _on_stop)
+    signal.signal(signal.SIGTERM, _on_stop)
+
     threading.Thread(target=_monitor_loop, daemon=True).start()
     threading.Thread(target=_auto_ack_loop, daemon=True).start()
 
     try:
         for line in sys.stdin:
+            if _stop_event.is_set():
+                break
             line = line.strip()
             if not line:
                 continue
@@ -451,6 +509,8 @@ def main():
                 print(f"[wechat-mcp] {e}", file=sys.stderr, flush=True)
     except (KeyboardInterrupt, EOFError):
         pass
+    finally:
+        _cleanup_mcp_pid()
 
 
 if __name__ == "__main__":
