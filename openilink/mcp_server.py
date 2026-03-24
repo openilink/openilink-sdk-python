@@ -65,7 +65,7 @@ def _channel_message(content: str, meta: dict):
 
 # ── Paths & State ───────────────────────────────────────────────────
 
-ILINK_DIR = Path(".ilink")
+ILINK_DIR = Path.home() / ".ilink"
 STATE_FILE = ILINK_DIR / "state.json"
 INBOX_FILE = ILINK_DIR / "inbox.jsonl"
 PID_FILE = ILINK_DIR / "daemon.pid"
@@ -88,6 +88,9 @@ _replied: set[str] = set()
 # Track pushed message IDs to prevent replays
 _pushed_ids: set[str] = set()
 
+# Typing indicator tickets: {user_id: typing_ticket}
+_typing_tickets: dict[str, str] = {}
+
 # Auto-ack timeout: if Claude doesn't reply within this many seconds,
 # the MCP server sends a fallback message directly.
 AUTO_ACK_TIMEOUT = float(os.environ.get("WECHAT_AUTO_ACK_TIMEOUT", "30"))
@@ -96,6 +99,49 @@ AUTO_ACK_MESSAGE = os.environ.get("WECHAT_AUTO_ACK_MESSAGE", "消息已收到，
 
 def _load_state() -> dict:
     return locked_read_json(STATE_FILE, default={})
+
+
+def _make_client():
+    """Build an authenticated Client from saved state, or None."""
+    from openilink import Client
+    state = _load_state()
+    if not state.get("token"):
+        return None
+    client = Client(token=state["token"])
+    if state.get("base_url"):
+        client.base_url = state["base_url"]
+    return client
+
+
+def _start_typing(user_id: str, ctx_token: str):
+    """Fetch typing ticket and show '输入中…' indicator (best-effort)."""
+    try:
+        client = _make_client()
+        if not client:
+            return
+        from openilink.types import TypingStatus
+        cfg = client.get_config(user_id, ctx_token)
+        ticket = cfg.typing_ticket
+        if ticket:
+            _typing_tickets[user_id] = ticket
+            client.send_typing(user_id, ticket, TypingStatus.TYPING)
+    except Exception:
+        pass  # best-effort, never crash
+
+
+def _cancel_typing(user_id: str):
+    """Cancel '输入中…' indicator if we have a ticket (best-effort)."""
+    ticket = _typing_tickets.pop(user_id, None)
+    if not ticket:
+        return
+    try:
+        client = _make_client()
+        if not client:
+            return
+        from openilink.types import TypingStatus
+        client.send_typing(user_id, ticket, TypingStatus.CANCEL)
+    except Exception:
+        pass
 
 
 def _read_cursor() -> int:
@@ -235,10 +281,6 @@ def _do_reply(user_id: str, text: str) -> dict:
             _replied.clear()
         _replied.add(user_id)
 
-    state = _load_state()
-    if not state.get("token"):
-        return _tool_error("Not logged in. Run: python -m openilink login")
-
     ctx = _ctx_tokens.get(user_id)
     if not ctx and INBOX_FILE.exists():
         for line in locked_read_lines(INBOX_FILE):
@@ -254,12 +296,13 @@ def _do_reply(user_id: str, text: str) -> dict:
     if not ctx:
         return _tool_error(f"No context token for {user_id}. User must message the bot first.")
 
-    from openilink import Client
-    client = Client(token=state["token"])
-    if state.get("base_url"):
-        client.base_url = state["base_url"]
+    client = _make_client()
+    if not client:
+        return _tool_error("Not logged in. Run: python -m openilink login")
     try:
         client.send_text(user_id, text, ctx)
+        # Cancel typing indicator after reply is sent
+        threading.Thread(target=_cancel_typing, args=(user_id,), daemon=True).start()
         return _tool_ok(f"Sent to {user_id}")
     except Exception as e:
         return _tool_error(f"Send failed: {e}")
@@ -345,6 +388,12 @@ def _monitor_loop():
                         _replied.discard(user_id)  # new message resets replied flag
                         _pending[user_id] = (time.time(), ctx_token, text)
 
+                # Show "输入中…" typing indicator while Claude thinks
+                if ctx_token:
+                    threading.Thread(
+                        target=_start_typing, args=(user_id, ctx_token), daemon=True
+                    ).start()
+
                 _channel_message(content=text, meta={
                     "chat_id": user_id,
                     "message_id": msg_id,
@@ -391,14 +440,11 @@ def _auto_ack_loop():
 
 def _send_reply_direct(user_id: str, text: str, ctx_token: str):
     """Send a reply bypassing the tool call (used for auto-ack)."""
-    from openilink import Client
-    state = _load_state()
-    if not state.get("token"):
+    client = _make_client()
+    if not client:
         return
-    client = Client(token=state["token"])
-    if state.get("base_url"):
-        client.base_url = state["base_url"]
     client.send_text(user_id, text, ctx_token)
+    _cancel_typing(user_id)
 
 
 # ── MCP request router ─────────────────────────────────────────────

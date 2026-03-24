@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
 import threading
-from typing import Any, Optional
-from urllib.parse import urljoin, quote
+from typing import Any, Callable, Optional
+from urllib.parse import urljoin, quote, urlencode
 from urllib.error import URLError
 
 from .errors import APIError, HTTPError, NoContextTokenError
 from .helpers import ensure_trailing_slash, random_wechat_uin
 from .http import DefaultHTTPDoer, HTTPDoer
 from .types import (
+    ENCRYPT_AES128_ECB,
+    CDNMedia,
+    FileItem,
     GetConfigResp,
     GetUpdatesResp,
     GetUploadURLResp,
+    ImageItem,
+    MessageItemType,
     MessageState,
     MessageType,
     TypingStatus,
+    UploadMediaType,
+    UploadResult,
+    VideoItem,
 )
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -48,14 +57,18 @@ class Client:
         base_url: str = DEFAULT_BASE_URL,
         cdn_base_url: str = DEFAULT_CDN_BASE_URL,
         bot_type: str = DEFAULT_BOT_TYPE,
-        version: str = "1.0.0",
+        version: str = "1.0.2",
+        route_tag: str = "",
         http_doer: Optional[HTTPDoer] = None,
+        silk_decoder: Optional[Callable[[bytes, int], bytes]] = None,
     ):
         self.base_url = base_url
         self.cdn_base_url = cdn_base_url
         self.token = token
         self.bot_type = bot_type
         self.version = version
+        self.route_tag = route_tag
+        self.silk_decoder = silk_decoder
         self._http = http_doer or DefaultHTTPDoer()
         self._context_tokens: dict[str, str] = {}
         self._ctx_lock = threading.Lock()
@@ -85,6 +98,8 @@ class Client:
         }
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
+        if self.route_tag:
+            headers["SKRouteTag"] = self.route_tag
         return headers
 
     def _do_post(self, endpoint: str, body: Any, timeout: float) -> bytes:
@@ -195,6 +210,268 @@ class Client:
             upload_param=d.get("upload_param", ""),
             thumb_upload_param=d.get("thumb_upload_param", ""),
         )
+
+    # --- CDN upload / download ---
+
+    _UPLOAD_MAX_RETRIES = 3
+    _CDN_TIMEOUT = 60
+
+    def _build_cdn_download_url(self, encrypted_query_param: str) -> str:
+        return self.cdn_base_url + "/download?encrypted_query_param=" + quote(encrypted_query_param)
+
+    def _build_cdn_upload_url(self, upload_param: str, filekey: str) -> str:
+        return (
+            self.cdn_base_url + "/upload?encrypted_query_param=" + quote(upload_param)
+            + "&filekey=" + quote(filekey)
+        )
+
+    def _upload_to_cdn(self, cdn_url: str, ciphertext: bytes) -> str:
+        """Upload with retry, return download encrypted_query_param."""
+        last_err: Optional[Exception] = None
+        for attempt in range(1, self._UPLOAD_MAX_RETRIES + 1):
+            try:
+                download_param = self._do_cdn_post(cdn_url, ciphertext)
+                return download_param
+            except HTTPError as e:
+                last_err = e
+                if 400 <= e.status_code < 500:
+                    raise
+            except Exception as e:
+                last_err = e
+            if attempt < self._UPLOAD_MAX_RETRIES:
+                time.sleep(2)
+        raise RuntimeError(f"CDN upload failed after {self._UPLOAD_MAX_RETRIES} attempts: {last_err}")
+
+    def _do_cdn_post(self, cdn_url: str, body: bytes) -> str:
+        """Low-level CDN POST that extracts x-encrypted-param from response."""
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError as _URLHTTPError
+        import ssl
+
+        req = Request(cdn_url, data=body, method="POST")
+        req.add_header("Content-Type", "application/octet-stream")
+        if self.route_tag:
+            req.add_header("SKRouteTag", self.route_tag)
+
+        ctx = ssl.create_default_context()
+        try:
+            with urlopen(req, timeout=self._CDN_TIMEOUT, context=ctx) as resp:
+                download_param = resp.headers.get("x-encrypted-param", "")
+                resp.read()  # drain body
+        except _URLHTTPError as e:
+            err_msg = ""
+            try:
+                err_msg = e.headers.get("x-error-message", "") or e.read().decode(errors="replace")
+            except Exception:
+                pass
+            raise HTTPError(e.code, err_msg.encode() if err_msg else b"") from e
+
+        if not download_param:
+            raise RuntimeError("CDN response missing x-encrypted-param header")
+        return download_param
+
+    def upload_file(
+        self,
+        plaintext: bytes,
+        to_user_id: str,
+        media_type: UploadMediaType,
+    ) -> UploadResult:
+        """Upload a file to the Weixin CDN with AES-128-ECB encryption.
+
+        Handles the full pipeline: MD5 hash, AES key generation, getUploadUrl
+        API call, encryption, and CDN POST with retry.
+        """
+        from .crypto import encrypt_aes_ecb, aes_ecb_padded_size
+
+        raw_size = len(plaintext)
+        raw_md5 = hashlib.md5(plaintext).hexdigest()
+        file_size = aes_ecb_padded_size(raw_size)
+        filekey = os.urandom(16).hex()
+        aes_key = os.urandom(16)
+
+        # 1. Get pre-signed upload URL
+        upload_resp = self.get_upload_url({
+            "filekey": filekey,
+            "media_type": int(media_type),
+            "to_user_id": to_user_id,
+            "rawsize": raw_size,
+            "rawfilemd5": raw_md5,
+            "filesize": file_size,
+            "no_need_thumb": True,
+            "aeskey": aes_key.hex(),
+        })
+        if not upload_resp.upload_param:
+            raise RuntimeError("getUploadUrl returned no upload_param")
+
+        # 2. Encrypt
+        ciphertext = encrypt_aes_ecb(plaintext, aes_key)
+
+        # 3. Upload to CDN with retry
+        cdn_url = self._build_cdn_upload_url(upload_resp.upload_param, filekey)
+        download_param = self._upload_to_cdn(cdn_url, ciphertext)
+
+        return UploadResult(
+            file_key=filekey,
+            download_encrypted_query_param=download_param,
+            aes_key=aes_key.hex(),
+            file_size=raw_size,
+            ciphertext_size=len(ciphertext),
+        )
+
+    def download_file(self, encrypted_query_param: str, aes_key_base64: str) -> bytes:
+        """Download and decrypt a file from the Weixin CDN."""
+        from .crypto import parse_aes_key, decrypt_aes_ecb
+
+        key = parse_aes_key(aes_key_base64)
+        dl_url = self._build_cdn_download_url(encrypted_query_param)
+        extra = {"SKRouteTag": self.route_tag} if self.route_tag else None
+        ciphertext = self._do_get(dl_url, extra_headers=extra, timeout=self._CDN_TIMEOUT)
+        return decrypt_aes_ecb(ciphertext, key)
+
+    def download_raw(self, encrypted_query_param: str) -> bytes:
+        """Download raw bytes from CDN without decryption."""
+        dl_url = self._build_cdn_download_url(encrypted_query_param)
+        extra = {"SKRouteTag": self.route_tag} if self.route_tag else None
+        return self._do_get(dl_url, extra_headers=extra, timeout=self._CDN_TIMEOUT)
+
+    # --- Media send methods ---
+
+    @staticmethod
+    def _media_aes_key(hex_key: str) -> str:
+        """Convert hex AES key to base64(hex) format used in CDNMedia."""
+        import base64
+        return base64.b64encode(hex_key.encode()).decode()
+
+    def _generate_client_id(self) -> str:
+        return f"sdk-{int.from_bytes(os.urandom(8), 'big'):016x}"
+
+    def send_image(
+        self, to: str, context_token: str, uploaded: UploadResult,
+    ) -> str:
+        """Send an image message. Use upload_file() with IMAGE first."""
+        client_id = self._generate_client_id()
+        msg = {
+            "msg": {
+                "to_user_id": to,
+                "client_id": client_id,
+                "message_type": int(MessageType.BOT),
+                "message_state": int(MessageState.FINISH),
+                "context_token": context_token,
+                "item_list": [{
+                    "type": int(MessageItemType.IMAGE),
+                    "image_item": {
+                        "media": {
+                            "encrypt_query_param": uploaded.download_encrypted_query_param,
+                            "aes_key": self._media_aes_key(uploaded.aes_key),
+                            "encrypt_type": ENCRYPT_AES128_ECB,
+                        },
+                        "mid_size": uploaded.ciphertext_size,
+                    },
+                }],
+            },
+        }
+        self.send_message(msg)
+        return client_id
+
+    def send_video(
+        self, to: str, context_token: str, uploaded: UploadResult,
+    ) -> str:
+        """Send a video message. Use upload_file() with VIDEO first."""
+        client_id = self._generate_client_id()
+        msg = {
+            "msg": {
+                "to_user_id": to,
+                "client_id": client_id,
+                "message_type": int(MessageType.BOT),
+                "message_state": int(MessageState.FINISH),
+                "context_token": context_token,
+                "item_list": [{
+                    "type": int(MessageItemType.VIDEO),
+                    "video_item": {
+                        "media": {
+                            "encrypt_query_param": uploaded.download_encrypted_query_param,
+                            "aes_key": self._media_aes_key(uploaded.aes_key),
+                            "encrypt_type": ENCRYPT_AES128_ECB,
+                        },
+                        "video_size": uploaded.ciphertext_size,
+                    },
+                }],
+            },
+        }
+        self.send_message(msg)
+        return client_id
+
+    def send_file_attachment(
+        self, to: str, context_token: str, file_name: str, uploaded: UploadResult,
+    ) -> str:
+        """Send a file attachment message. Use upload_file() with FILE first."""
+        client_id = self._generate_client_id()
+        msg = {
+            "msg": {
+                "to_user_id": to,
+                "client_id": client_id,
+                "message_type": int(MessageType.BOT),
+                "message_state": int(MessageState.FINISH),
+                "context_token": context_token,
+                "item_list": [{
+                    "type": int(MessageItemType.FILE),
+                    "file_item": {
+                        "media": {
+                            "encrypt_query_param": uploaded.download_encrypted_query_param,
+                            "aes_key": self._media_aes_key(uploaded.aes_key),
+                            "encrypt_type": ENCRYPT_AES128_ECB,
+                        },
+                        "file_name": file_name,
+                        "len": str(uploaded.file_size),
+                    },
+                }],
+            },
+        }
+        self.send_message(msg)
+        return client_id
+
+    def send_media_file(
+        self,
+        to: str,
+        context_token: str,
+        data: bytes,
+        file_name: str,
+        caption: str = "",
+    ) -> None:
+        """High-level helper: upload and send a media file.
+
+        Auto-detects media type (image/video/file) from filename.
+        Optionally sends a caption text before the media.
+        """
+        from .mime import mime_from_filename, is_image_mime, is_video_mime
+
+        mime = mime_from_filename(file_name)
+        if is_video_mime(mime):
+            media_type = UploadMediaType.VIDEO
+        elif is_image_mime(mime):
+            media_type = UploadMediaType.IMAGE
+        else:
+            media_type = UploadMediaType.FILE
+
+        uploaded = self.upload_file(data, to, media_type)
+
+        if caption:
+            self.send_text(to, caption, context_token)
+
+        if is_video_mime(mime):
+            self.send_video(to, context_token, uploaded)
+        elif is_image_mime(mime):
+            self.send_image(to, context_token, uploaded)
+        else:
+            self.send_file_attachment(to, context_token, os.path.basename(file_name), uploaded)
+
+    def download_voice(self, voice_item) -> bytes:
+        """Download a voice message, decode SILK, return WAV bytes.
+
+        Requires silk_decoder to be set on the client.
+        """
+        from .voice import download_voice
+        return download_voice(self, voice_item, silk_decoder=self.silk_decoder)
 
     def push(self, to: str, text: str) -> str:
         """Send a proactive text message using a cached context token.
@@ -358,5 +635,6 @@ def _parse_get_updates_resp(data: bytes) -> GetUpdatesResp:
         errmsg=d.get("errmsg", ""),
         msgs=msgs,
         get_updates_buf=d.get("get_updates_buf", ""),
+        sync_buf=d.get("sync_buf", ""),
         longpolling_timeout_ms=d.get("longpolling_timeout_ms", 0),
     )

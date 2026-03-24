@@ -42,6 +42,18 @@ class TypingStatus(IntEnum):
     CANCEL = 2
 
 
+class VoiceFormat(IntEnum):
+    UNKNOWN = -1
+    AMR = 0
+    SPEEX = 1
+    MP3 = 2
+    WAVE = 3
+    SILK = 4
+
+
+ENCRYPT_AES128_ECB = 1
+
+
 # ---------- Data classes ----------
 
 @dataclass
@@ -154,6 +166,7 @@ class GetUpdatesResp:
     errmsg: str = ""
     msgs: list[WeixinMessage] = field(default_factory=list)
     get_updates_buf: str = ""
+    sync_buf: str = ""
     longpolling_timeout_ms: int = 0
 
 
@@ -168,6 +181,16 @@ class GetConfigResp:
 class GetUploadURLResp:
     upload_param: str = ""
     thumb_upload_param: str = ""
+
+
+@dataclass
+class UploadResult:
+    """Result of a CDN upload."""
+    file_key: str = ""
+    download_encrypted_query_param: str = ""
+    aes_key: str = ""
+    file_size: int = 0
+    ciphertext_size: int = 0
 
 
 @dataclass

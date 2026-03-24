@@ -17,7 +17,7 @@ from .monitor import MonitorOptions, monitor
 
 logger = logging.getLogger("openilink.daemon")
 
-ILINK_DIR = Path(".ilink")
+ILINK_DIR = Path.home() / ".ilink"
 STATE_FILE = ILINK_DIR / "state.json"
 INBOX_FILE = ILINK_DIR / "inbox.jsonl"
 BUF_FILE = ILINK_DIR / "sync_buf.dat"

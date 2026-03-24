@@ -27,11 +27,13 @@ class MonitorOptions:
         on_buf_update: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
         on_session_expired: Optional[Callable[[], None]] = None,
+        on_response: Optional[Callable] = None,
     ):
         self.initial_buf = initial_buf
         self.on_buf_update = on_buf_update
         self.on_error = on_error or (lambda e: None)
         self.on_session_expired = on_session_expired
+        self.on_response = on_response
 
 
 def _safe_callback(fn: Callable, *args: object) -> None:
@@ -87,6 +89,10 @@ def monitor(
 
         # Success: reset backoff
         backoff = INITIAL_BACKOFF
+
+        # Invoke on_response before dispatching messages
+        if opts.on_response:
+            _safe_callback(opts.on_response, resp)
 
         # Update sync cursor
         if resp.get_updates_buf:

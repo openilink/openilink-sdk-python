@@ -366,24 +366,16 @@ ccw
 
 ### 配置 ccw 命令
 
+**Bash / Git Bash：**
 ```bash
-# 1. 创建 MCP 配置文件
-cat > ~/.claude/mcp-wechat.json << 'EOF'
-{
-  "mcpServers": {
-    "wechat": {
-      "command": "python",
-      "args": ["-m", "openilink.mcp_server"],
-      "cwd": "<your-project-path>",
-      "env": { "WECHAT_AUTO_ACK_TIMEOUT": "0" }
-    }
-  }
-}
-EOF
-
-# 2. 添加别名
-echo 'alias ccw="claude --mcp-config ~/.claude/mcp-wechat.json"' >> ~/.bashrc
+echo 'alias ccw="claude --dangerously-load-development-channels server:wechat"' >> ~/.bashrc
 source ~/.bashrc
+```
+
+**PowerShell：**
+```powershell
+Add-Content $PROFILE 'function ccw { claude --dangerously-load-development-channels server:wechat @args }'
+. $PROFILE
 ```
 
 ### 多实例安全
