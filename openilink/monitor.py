@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import TYPE_CHECKING, Callable, Optional
 
 from .errors import APIError
+
+logger = logging.getLogger("openilink.monitor")
 
 if TYPE_CHECKING:
     from .client import Client
@@ -25,11 +28,21 @@ class MonitorOptions:
         on_buf_update: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[Exception], None]] = None,
         on_session_expired: Optional[Callable[[], None]] = None,
+        on_response: Optional[Callable] = None,
     ):
         self.initial_buf = initial_buf
         self.on_buf_update = on_buf_update
         self.on_error = on_error or (lambda e: None)
         self.on_session_expired = on_session_expired
+        self.on_response = on_response
+
+
+def _safe_callback(fn: Callable, *args: object) -> None:
+    """Invoke a callback, catching and logging any exception it raises."""
+    try:
+        fn(*args)
+    except Exception as exc:
+        logger.error("callback %s raised: %s", getattr(fn, "__name__", fn), exc)
 
 
 def monitor(
@@ -55,7 +68,7 @@ def monitor(
             if client.stopped:
                 return
             failures += 1
-            opts.on_error(Exception(f"getUpdates ({failures}/{MAX_CONSECUTIVE_FAILURES}): {exc}"))
+            _safe_callback(opts.on_error, Exception(f"getUpdates ({failures}/{MAX_CONSECUTIVE_FAILURES}): {exc}"))
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 failures = 0
                 _sleep_or_stop(client, BACKOFF_DELAY)
@@ -69,13 +82,13 @@ def monitor(
 
             if api_err.is_session_expired():
                 if opts.on_session_expired:
-                    opts.on_session_expired()
-                opts.on_error(api_err)
+                    _safe_callback(opts.on_session_expired)
+                _safe_callback(opts.on_error, api_err)
                 _sleep_or_stop(client, 300)  # 5 minutes
                 continue
 
             failures += 1
-            opts.on_error(Exception(f"getUpdates ({failures}/{MAX_CONSECUTIVE_FAILURES}): {api_err}"))
+            _safe_callback(opts.on_error, Exception(f"getUpdates ({failures}/{MAX_CONSECUTIVE_FAILURES}): {api_err}"))
             if failures >= MAX_CONSECUTIVE_FAILURES:
                 failures = 0
                 _sleep_or_stop(client, BACKOFF_DELAY)
@@ -85,21 +98,25 @@ def monitor(
 
         failures = 0
 
+        # Invoke on_response before dispatching messages
+        if opts.on_response:
+            _safe_callback(opts.on_response, resp)
+
         # Update sync cursor
         if resp.get_updates_buf:
             buf = resp.get_updates_buf
             if opts.on_buf_update:
-                opts.on_buf_update(buf)
+                _safe_callback(opts.on_buf_update, buf)
 
         # Dispatch messages
         for msg in resp.msgs:
             if msg.context_token and msg.from_user_id:
                 client.set_context_token(msg.from_user_id, msg.context_token)
-            handler(msg)
+            _safe_callback(handler, msg)
 
 
 def _sleep_or_stop(client: Client, seconds: float) -> None:
     """Sleep in small increments so we can respond to stop quickly."""
     end = time.monotonic() + seconds
     while time.monotonic() < end and not client.stopped:
-        time.sleep(min(0.5, end - time.monotonic()))
+        time.sleep(max(0, min(0.5, end - time.monotonic())))

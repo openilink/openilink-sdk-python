@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import os
 import struct
 
@@ -18,11 +19,47 @@ def random_wechat_uin() -> str:
     return base64.b64encode(str(n).encode()).decode()
 
 
+def is_media_item(item) -> bool:
+    """Check if a message item is a media type (image, video, file, or voice)."""
+    return item.type in (
+        MessageItemType.IMAGE,
+        MessageItemType.VIDEO,
+        MessageItemType.FILE,
+        MessageItemType.VOICE,
+    )
+
+
 def extract_text(msg: WeixinMessage) -> str:
-    """Return the first text body from a message's item list."""
+    """Return the text body from a message's item list.
+
+    Handles three cases in priority order:
+      1. A text item with an optional quoted/referenced message prefix
+      2. A voice item with speech-to-text transcription
+      3. Empty string if neither is found
+    """
     for item in msg.item_list:
         if item.type == MessageItemType.TEXT and item.text_item is not None:
-            return item.text_item.text
+            text = item.text_item.text
+            # Prepend quoted message context if present and not a media ref
+            ref = item.ref_msg
+            if (
+                ref is not None
+                and ref.message_item is not None
+                and not is_media_item(ref.message_item)
+            ):
+                ref_body = ""
+                if ref.message_item.text_item is not None:
+                    ref_body = ref.message_item.text_item.text
+                title = ref.title
+                if title or ref_body:
+                    text = f"[引用: {title} | {ref_body}]\n{text}"
+            return text
+
+    # Fallback: voice-to-text transcription
+    for item in msg.item_list:
+        if item.type == MessageItemType.VOICE and item.voice_item is not None and item.voice_item.text:
+            return item.voice_item.text
+
     return ""
 
 
@@ -33,7 +70,6 @@ def print_qrcode(url: str) -> None:
 
         pip install qrcode
     """
-    import io
     import sys
 
     try:

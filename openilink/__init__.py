@@ -13,6 +13,7 @@ Basic usage::
 """
 
 from .types import (
+    ENCRYPT_AES128_ECB,
     BaseInfo,
     CDNMedia,
     FileItem,
@@ -31,13 +32,28 @@ from .types import (
     TextItem,
     TypingStatus,
     UploadMediaType,
+    UploadResult,
     VideoItem,
+    VoiceFormat,
     VoiceItem,
     WeixinMessage,
 )
 from .errors import APIError, HTTPError, NoContextTokenError
 from .http import DefaultHTTPDoer, HTTPDoer, Response
-from .helpers import extract_text, print_qrcode
+from .helpers import extract_text, is_media_item, print_qrcode
+from .crypto import (
+    encrypt_aes_ecb,
+    decrypt_aes_ecb,
+    aes_ecb_padded_size,
+    parse_aes_key,
+)
+from .mime import (
+    mime_from_filename,
+    extension_from_mime,
+    is_image_mime,
+    is_video_mime,
+)
+from .voice import build_wav, DEFAULT_VOICE_SAMPLE_RATE
 from .auth import LoginCallbacks
 from .monitor import MonitorOptions
 
@@ -86,6 +102,7 @@ __all__ = [
     "LoginCallbacks",
     "MonitorOptions",
     # types
+    "ENCRYPT_AES128_ECB",
     "BaseInfo",
     "CDNMedia",
     "FileItem",
@@ -104,7 +121,9 @@ __all__ = [
     "TextItem",
     "TypingStatus",
     "UploadMediaType",
+    "UploadResult",
     "VideoItem",
+    "VoiceFormat",
     "VoiceItem",
     "WeixinMessage",
     # errors
@@ -115,7 +134,21 @@ __all__ = [
     "HTTPDoer",
     "DefaultHTTPDoer",
     "Response",
+    # crypto
+    "encrypt_aes_ecb",
+    "decrypt_aes_ecb",
+    "aes_ecb_padded_size",
+    "parse_aes_key",
+    # mime
+    "mime_from_filename",
+    "extension_from_mime",
+    "is_image_mime",
+    "is_video_mime",
+    # voice
+    "build_wav",
+    "DEFAULT_VOICE_SAMPLE_RATE",
     # helpers
     "extract_text",
+    "is_media_item",
     "print_qrcode",
 ]
