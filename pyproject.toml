@@ -9,10 +9,7 @@ description = "Python client for the Weixin iLink Bot API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = [
-    "cryptography>=41.0",
-    "silk-python==0.2.8",
-]
+dependencies = ["cryptography>=41.0"]
 
 [project.optional-dependencies]
 qrcode = ["qrcode>=7.0"]
