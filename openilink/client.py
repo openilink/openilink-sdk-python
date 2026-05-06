@@ -69,7 +69,6 @@ class Client:
         self._context_tokens: dict[str, str] = {}
         self._ctx_lock = threading.Lock()
         self._stop_event = threading.Event()
-        print("self._http", type(self._http))
     # --- context token cache ---
 
     def set_context_token(self, user_id: str, token: str) -> None:
@@ -130,7 +129,6 @@ class Client:
         timeout = _DEFAULT_LONG_POLL_TIMEOUT + 5
         try:
             data = self._do_post("ilink/bot/getupdates", req_body, timeout)
-            print("== data", data)
         except (URLError, OSError):
             return GetUpdatesResp(ret=0, get_updates_buf=get_updates_buf)
 
