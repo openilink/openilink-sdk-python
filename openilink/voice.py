@@ -1,13 +1,17 @@
 """Voice message utilities — SILK decoding and WAV building."""
 
 from __future__ import annotations
-
+import inspect
+from io import BytesIO
 import struct
 from typing import Callable, Optional
 
 from .types import VoiceItem
 
 # Type alias for a pluggable SILK decoder function.
+# Common signatures:
+# 1. (silk_data: bytes, sample_rate: int) -> pcm: bytes
+# 2. (input: BinaryIO, output: BinaryIO, sample_rate: int, ...) -> bytes
 # Signature: (silk_data: bytes, sample_rate: int) -> pcm: bytes
 SILKDecoder = Callable[[bytes, int], bytes]
 
@@ -58,6 +62,7 @@ def download_voice(
         from silk import decode as silk_decode
         wav = download_voice(client, voice_item, silk_decoder=silk_decode)
     """
+
     if silk_decoder is None:
         raise ValueError("no SILK decoder provided; pass a silk_decoder function")
     if voice is None or voice.media is None:
@@ -70,7 +75,18 @@ def download_voice(
     sample_rate = voice.sample_rate if voice.sample_rate > 0 else DEFAULT_VOICE_SAMPLE_RATE
 
     # 3. Decode SILK -> PCM
-    pcm = silk_decoder(data, sample_rate)
+    try:
+        decoder_params = list(inspect.signature(silk_decoder).parameters)
+    except (TypeError, ValueError):
+        decoder_params = []
+
+    if len(decoder_params) >= 3:
+        input_io = BytesIO(data)
+        output_io = BytesIO()
+        decoded = silk_decoder(input_io, output_io, sample_rate)
+        pcm = decoded if isinstance(decoded, (bytes, bytearray)) and decoded else output_io.getvalue()
+    else:
+        pcm = silk_decoder(data, sample_rate)
 
     # 4. Wrap in WAV
     return build_wav(pcm, sample_rate, 1, 16)

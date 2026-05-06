@@ -69,7 +69,6 @@ class Client:
         self._context_tokens: dict[str, str] = {}
         self._ctx_lock = threading.Lock()
         self._stop_event = threading.Event()
-
     # --- context token cache ---
 
     def set_context_token(self, user_id: str, token: str) -> None:
