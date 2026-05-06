@@ -64,6 +64,7 @@ def monitor(
     while not client.stopped:
         try:
             resp = client.get_updates(buf)
+            print("resp",resp)
         except Exception as exc:
             if client.stopped:
                 return
